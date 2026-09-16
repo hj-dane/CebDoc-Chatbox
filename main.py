@@ -3,22 +3,21 @@ main.py
 -------
 This file is the user interface for Cebuano Doctor.
 
-It shows a simple chatbox window (built with Tkinter, which comes
-included with Python -- no extra UI framework needed), accepts a
-Cebuano healthcare question, and displays the Cebuano answer.
-
-main.py does NOT talk to Ollama directly and does NOT know about
-Gemma 4, MedGemma, or the three internal prompts. It only calls
-brain.process_cebuano_message(...) and displays whatever Cebuano
-text comes back. That keeps the internal pipeline completely hidden
-from the normal user.
-
-A background thread is used for each pipeline call so the window
-never freezes while the three models are generating a response.
+Enhanced UI Features & Fixes:
+  - Startup model warmup thread for instantaneous first-response rendering
+  - Fast canvas bubble generation (uses tkfont to avoid UI layout slowdowns)
+  - Doctor (AI) chat bubbles & labels aligned to the RIGHT
+  - User chat bubbles & labels aligned to the LEFT
+  - True border radius / rounded corners on all chat bubbles
+  - Oblong (pill-shaped) input text box
+  - +5 enlarged text sizing across the interface
+  - Large blue header title
+  - Fixed bottom input dock so text box stays visible
 """
 
 import threading
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import scrolledtext, messagebox, ttk
 
 import brain
@@ -27,8 +26,6 @@ import brain
 # ---------------------------------------------------------------------------
 # DEVELOPER SWITCH
 # ---------------------------------------------------------------------------
-# Set this to True only while developing/evaluating the assignment.
-# It must stay False for a normal end user.
 DEBUG_MODE = False
 
 
@@ -36,98 +33,152 @@ class CebuanoDoctorApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Cebuano Doctor")
-        self.root.geometry("520x640")
-        self.root.minsize(420, 480)
+        self.root.geometry("640x780")
+        self.root.minsize(500, 600)
+        self.root.configure(bg="#f8f9fa")
+
+        # Cache font helper to calculate bubble widths quickly
+        self.bubble_font = tkfont.Font(family="Segoe UI", size=15)
 
         brain.set_debug_mode(DEBUG_MODE)
         self.history = brain.ConversationHistory()
 
-        # Track whether a message is currently being processed, so we
-        # can disable the Send button and avoid overlapping requests.
         self._processing = False
 
         self._build_widgets()
+
+        # Pre-warm Ollama models in background thread on startup
+        threading.Thread(target=brain.warmup_models, daemon=True).start()
 
     # -----------------------------------------------------------------
     # UI LAYOUT
     # -----------------------------------------------------------------
 
     def _build_widgets(self):
+        # 1. FIXED TOP HEADER
+        header_frame = tk.Frame(self.root, bg="#f8f9fa", pady=10)
+        header_frame.pack(side="top", fill="x")
+
         header = tk.Label(
-            self.root,
+            header_frame,
             text="CEBUANO DOCTOR",
-            font=("Segoe UI", 16, "bold"),
-            pady=10,
+            font=("Segoe UI", 21, "bold"),
+            fg="#0d6efd",
+            bg="#f8f9fa",
         )
         header.pack(fill="x")
 
         subheader = tk.Label(
-            self.root,
+            header_frame,
             text="AI nga edukasyonal nga katabang sa panglawas (dili puli sa doktor)",
-            font=("Segoe UI", 9),
-            fg="gray30",
+            font=("Segoe UI", 11),
+            fg="#6c757d",
+            bg="#f8f9fa",
         )
-        subheader.pack(fill="x", pady=(0, 5))
+        subheader.pack(fill="x", pady=(2, 0))
 
-        # Scrollable chat history area. Read-only from the user's side --
-        # we only ever insert text into it from code.
+        # 2. FIXED BOTTOM INPUT DOCK
+        input_frame = tk.Frame(self.root, bg="#f8f9fa")
+        input_frame.pack(side="bottom", fill="x", padx=15, pady=15)
+
+        pill_container = tk.Frame(input_frame, bg="#f8f9fa")
+        pill_container.pack(side="left", fill="x", expand=True, padx=(0, 10))
+
+        pill_canvas = tk.Canvas(
+            pill_container,
+            height=50,
+            bg="#f8f9fa",
+            highlightthickness=0,
+            bd=0
+        )
+        pill_canvas.pack(fill="x", expand=True)
+
+        self.input_var = tk.StringVar()
+        self.input_entry = tk.Entry(
+            pill_canvas,
+            textvariable=self.input_var,
+            font=("Segoe UI", 15),
+            bg="#ffffff",
+            fg="#000000",
+            relief="flat",
+            bd=0,
+            highlightthickness=0
+        )
+
+        def _draw_pill(event):
+            w = event.width
+            h = event.height
+            r = h // 2
+            pill_canvas.delete("all")
+            pill_canvas.create_arc(0, 0, h, h, start=90, extent=180, fill="#ffffff", outline="#ced4da")
+            pill_canvas.create_arc(w - h, 0, w, h, start=-90, extent=180, fill="#ffffff", outline="#ced4da")
+            pill_canvas.create_rectangle(r, 0, w - r, h, fill="#ffffff", outline="#ffffff")
+            pill_canvas.create_line(r, 0, w - r, 0, fill="#ced4da")
+            pill_canvas.create_line(r, h - 1, w - r, h - 1, fill="#ced4da")
+            pill_canvas.create_window(r, h // 2, window=self.input_entry, width=w - (r * 2), anchor="w")
+
+        pill_canvas.bind("<Configure>", _draw_pill)
+
+        self.input_entry.bind("<Return>", lambda event: self._on_send())
+        self.input_entry.focus_set()
+
+        self.send_button = tk.Button(
+            input_frame, 
+            text="Ipadala", 
+            width=10, 
+            font=("Segoe UI", 13, "bold"),
+            bg="#0d6efd",
+            fg="white",
+            activebackground="#0b5ed7",
+            activeforeground="white",
+            relief="flat",
+            cursor="hand2",
+            command=self._on_send
+        )
+        self.send_button.pack(side="left", ipady=6)
+
+        self.status_var = tk.StringVar(value="")
+        self.status_label = tk.Label(
+            self.root, 
+            textvariable=self.status_var, 
+            fg="#6c757d", 
+            bg="#f8f9fa",
+            font=("Segoe UI", 12, "italic")
+        )
+        self.status_label.pack(side="bottom", fill="x", padx=15, pady=(0, 5))
+
+        if DEBUG_MODE:
+            self._build_debug_panel()
+
+        # 3. MIDDLE CHAT AREA
         self.chat_area = scrolledtext.ScrolledText(
             self.root,
             wrap="word",
             state="disabled",
-            font=("Segoe UI", 10),
-            padx=8,
-            pady=8,
+            font=("Segoe UI", 15),
+            padx=12,
+            pady=12,
+            bg="#ffffff",
+            relief="flat",
+            bd=1,
+            height=12
         )
-        self.chat_area.pack(fill="both", expand=True, padx=10, pady=(0, 5))
+        self.chat_area.pack(side="top", fill="both", expand=True, padx=15, pady=(0, 5))
 
-        # Text tags so user / doctor / status messages look different.
-        self.chat_area.tag_configure("user_label", foreground="#1a5fb4", font=("Segoe UI", 10, "bold"))
-        self.chat_area.tag_configure("doctor_label", foreground="#26a269", font=("Segoe UI", 10, "bold"))
-        self.chat_area.tag_configure("status", foreground="gray50", font=("Segoe UI", 9, "italic"))
-        self.chat_area.tag_configure("error", foreground="#c01c28")
-
-        # Temporary status line (e.g. "Gisabtan ang imong pangutana...").
-        self.status_var = tk.StringVar(value="")
-        self.status_label = tk.Label(
-            self.root, textvariable=self.status_var, fg="gray40", font=("Segoe UI", 9, "italic")
-        )
-        self.status_label.pack(fill="x", padx=10)
-
-        # Bottom input row: text entry + Send button.
-        input_frame = tk.Frame(self.root)
-        input_frame.pack(fill="x", padx=10, pady=10)
-
-        self.input_var = tk.StringVar()
-        self.input_entry = tk.Entry(input_frame, textvariable=self.input_var, font=("Segoe UI", 11))
-        self.input_entry.pack(side="left", fill="x", expand=True, ipady=6)
-        self.input_entry.bind("<Return>", lambda event: self._on_send())
-        self.input_entry.insert(0, "")
-        self.input_entry.focus_set()
-
-        self.send_button = tk.Button(
-            input_frame, text="Ipadala", width=10, command=self._on_send
-        )
-        self.send_button.pack(side="left", padx=(8, 0))
-
-        # Debug-only panel for browsing the internal prompt files. This is
-        # never built (and never visible) unless DEBUG_MODE is True, so a
-        # normal user never sees it.
-        if DEBUG_MODE:
-            self._build_debug_panel()
+        self.chat_area.tag_configure("user_align", justify="left")
+        self.chat_area.tag_configure("doctor_align", justify="right")
+        self.chat_area.tag_configure("user_label", foreground="#0b5ed7", font=("Segoe UI", 12, "bold"))
+        self.chat_area.tag_configure("doctor_label", foreground="#0a58ca", font=("Segoe UI", 12, "bold"))
+        self.chat_area.tag_configure("status", foreground="#6c757d", font=("Segoe UI", 13, "italic"))
+        self.chat_area.tag_configure("error", foreground="#dc3545", font=("Segoe UI", 14, "bold"))
 
         self._append_placeholder_prompt()
 
     def _build_debug_panel(self):
-        """
-        Debug/evaluation panel: lets the developer pick one of the internal
-        prompt files and view its raw content. Only built when DEBUG_MODE
-        is True.
-        """
-        panel = tk.LabelFrame(self.root, text="Debug: View Prompt", padx=8, pady=8)
-        panel.pack(fill="x", padx=10, pady=(0, 5))
+        panel = tk.LabelFrame(self.root, text="Debug: View Prompt", padx=8, pady=8, bg="#f8f9fa")
+        panel.pack(side="bottom", fill="x", padx=15, pady=(0, 5))
 
-        row = tk.Frame(panel)
+        row = tk.Frame(panel, bg="#f8f9fa")
         row.pack(fill="x")
 
         prompt_files = brain.list_prompt_files()
@@ -139,16 +190,21 @@ class CebuanoDoctorApp:
             values=prompt_files,
             state="readonly" if prompt_files else "disabled",
             width=28,
+            font=("Segoe UI", 12)
         )
         if prompt_files:
             self.prompt_dropdown.current(0)
         self.prompt_dropdown.pack(side="left", fill="x", expand=True)
 
-        view_button = tk.Button(row, text="View Prompt", command=self._on_view_prompt)
+        view_button = tk.Button(
+            row, 
+            text="View Prompt", 
+            font=("Segoe UI", 11),
+            command=self._on_view_prompt
+        )
         view_button.pack(side="left", padx=(8, 0))
 
     def _on_view_prompt(self):
-        """Show the selected prompt file's raw content in a popup window."""
         prompt_files = brain.list_prompt_files()
 
         if not prompt_files:
@@ -168,22 +224,78 @@ class CebuanoDoctorApp:
 
         popup = tk.Toplevel(self.root)
         popup.title(f"Prompt: {selected}")
-        popup.geometry("480x420")
+        popup.geometry("550x500")
 
-        text_area = scrolledtext.ScrolledText(popup, wrap="word", font=("Consolas", 10))
-        text_area.pack(fill="both", expand=True, padx=8, pady=8)
+        text_area = scrolledtext.ScrolledText(popup, wrap="word", font=("Consolas", 12))
+        text_area.pack(fill="both", expand=True, padx=10, pady=10)
         text_area.insert("1.0", content)
         text_area.configure(state="disabled")
 
     def _append_placeholder_prompt(self):
         self._append_chat(
-            "Isulat ang imong pangutana sa Cebuano bahin sa imong panglawas.\n",
+            "Isulat ang imong pangutana sa Cebuano bahin sa imong panglawas.\n\n",
             tag="status",
         )
 
     # -----------------------------------------------------------------
-    # CHAT DISPLAY HELPERS
+    # FAST CHAT BUBBLE RENDERING
     # -----------------------------------------------------------------
+
+    def _create_rounded_bubble(self, parent_widget, text, bg_color, fg_color, max_width=400, radius=14):
+        """Fast creation of rounded bubbles using cached tkfont measurement."""
+        lines = text.split("\n")
+        calc_lines = []
+        for line in lines:
+            if not line:
+                calc_lines.append("")
+                continue
+            words = line.split(" ")
+            curr_line = ""
+            for w in words:
+                test_line = f"{curr_line} {w}".strip()
+                if self.bubble_font.measure(test_line) <= max_width:
+                    curr_line = test_line
+                else:
+                    calc_lines.append(curr_line)
+                    curr_line = w
+            if curr_line:
+                calc_lines.append(curr_line)
+
+        wrapped_text = "\n".join(calc_lines)
+        text_w = max(self.bubble_font.measure(l) for l in calc_lines) if calc_lines else 10
+        text_h = len(calc_lines) * (self.bubble_font.metrics("linespace") + 2)
+
+        pad_x, pad_y = 16, 12
+        w = text_w + (pad_x * 2)
+        h = text_h + (pad_y * 2)
+
+        canvas = tk.Canvas(
+            parent_widget,
+            width=w,
+            height=h,
+            bg="#ffffff",
+            highlightthickness=0,
+            bd=0
+        )
+
+        r = radius * 2
+        canvas.create_arc(0, 0, r, r, start=90, extent=90, fill=bg_color, outline=bg_color)
+        canvas.create_arc(w - r, 0, w, r, start=0, extent=90, fill=bg_color, outline=bg_color)
+        canvas.create_arc(w - r, h - r, w, h, start=270, extent=90, fill=bg_color, outline=bg_color)
+        canvas.create_arc(0, h - r, r, h, start=180, extent=90, fill=bg_color, outline=bg_color)
+
+        canvas.create_rectangle(radius, 0, w - radius, h, fill=bg_color, outline=bg_color)
+        canvas.create_rectangle(0, radius, w, h - radius, fill=bg_color, outline=bg_color)
+
+        canvas.create_text(
+            pad_x, pad_y,
+            text=wrapped_text,
+            font=self.bubble_font,
+            fill=fg_color,
+            anchor="nw"
+        )
+
+        return canvas
 
     def _append_chat(self, text, tag=None):
         self.chat_area.configure(state="normal")
@@ -195,12 +307,47 @@ class CebuanoDoctorApp:
         self.chat_area.see("end")
 
     def _append_user_message(self, text):
-        self._append_chat("Ikaw\n", tag="user_label")
-        self._append_chat(f"{text}\n\n")
+        self.chat_area.configure(state="normal")
+        self.chat_area.insert("end", "Ikaw\n", ("user_align", "user_label"))
+        
+        row_frame = tk.Frame(self.chat_area, bg="#ffffff")
+        bubble = self._create_rounded_bubble(
+            parent_widget=row_frame,
+            text=text, 
+            bg_color="#e7f1ff", 
+            fg_color="#0c4a6e", 
+            radius=14
+        )
+        bubble.pack(side="left")
+        
+        self.chat_area.window_create("end", window=row_frame)
+        self.chat_area.insert("end", "\n\n", "user_align")
+        self.chat_area.configure(state="disabled")
+        self.chat_area.see("end")
 
     def _append_doctor_message(self, text):
-        self._append_chat("Doctor\n", tag="doctor_label")
-        self._append_chat(f"{text}\n\n")
+        self.chat_area.configure(state="normal")
+        self.chat_area.insert("end", "Doctor\n", ("doctor_align", "doctor_label"))
+        
+        chat_width = self.chat_area.winfo_width()
+        if chat_width < 100:
+            chat_width = 580
+
+        row_frame = tk.Frame(self.chat_area, bg="#ffffff", width=chat_width - 30)
+        
+        bubble = self._create_rounded_bubble(
+            parent_widget=row_frame,
+            text=text, 
+            bg_color="#0d6efd", 
+            fg_color="#ffffff", 
+            radius=14
+        )
+        bubble.pack(side="right", anchor="e")
+        
+        self.chat_area.window_create("end", window=row_frame, align="right")
+        self.chat_area.insert("end", "\n\n", "doctor_align")
+        self.chat_area.configure(state="disabled")
+        self.chat_area.see("end")
 
     def _append_error_message(self, text):
         self._append_chat(f"{text}\n\n", tag="error")
@@ -211,19 +358,17 @@ class CebuanoDoctorApp:
 
     def _on_send(self):
         if self._processing:
-            return  # ignore extra clicks while a request is in flight
+            return
 
         user_text = self.input_var.get().strip()
         if not user_text:
-            return  # empty message -- nothing to send
+            return
 
         self.input_var.set("")
         self._append_user_message(user_text)
 
         self._set_processing(True)
 
-        # Run the (slow) pipeline on a background thread so the Tkinter
-        # UI loop stays responsive and never freezes.
         thread = threading.Thread(
             target=self._run_pipeline, args=(user_text,), daemon=True
         )
@@ -232,15 +377,14 @@ class CebuanoDoctorApp:
     def _set_processing(self, is_processing):
         self._processing = is_processing
         state = "disabled" if is_processing else "normal"
-        self.send_button.configure(state=state)
+        btn_bg = "#6c757d" if is_processing else "#0d6efd"
+        self.send_button.configure(state=state, bg=btn_bg)
         self.input_entry.configure(state=state)
         if not is_processing:
             self.status_var.set("")
             self.input_entry.focus_set()
 
     def _set_status(self, message):
-        # Called from the background thread; Tkinter widget updates must
-        # happen on the main thread, so we hop back over with `after`.
         self.root.after(0, lambda: self.status_var.set(message))
 
     def _run_pipeline(self, user_text):
@@ -251,9 +395,7 @@ class CebuanoDoctorApp:
         except brain.CebuanoDoctorError as e:
             self.root.after(0, lambda: self._handle_error(e.friendly_message_cebuano))
             return
-        except Exception as e:
-            # Final safety net -- never let an unexpected exception
-            # crash the app or show a raw traceback to the user.
+        except Exception:
             self.root.after(
                 0,
                 lambda: self._handle_error(
@@ -271,7 +413,7 @@ class CebuanoDoctorApp:
             debug_text = (
                 "[DEBUG] English translation: {english_translation}\n"
                 "[DEBUG] English medical response: {english_medical_response}\n"
-                "[DEBUG] Timings: {timings}\n"
+                "[DEBUG] Timings: {timings}\n\n"
             ).format(**debug)
             self._append_chat(debug_text, tag="status")
         self._set_processing(False)
