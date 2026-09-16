@@ -57,7 +57,7 @@ installations already, so nothing else is needed for the UI.
 ## 2. Running the application
 
 Make sure Ollama is running in the background (on most systems it
-starts automatically after installation; otherwise run `ollama serve`
+starts automatically after cinstallation; otherwise run `ollama serve`
 in a terminal), then:
 
 ```bash
