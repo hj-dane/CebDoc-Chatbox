@@ -226,7 +226,7 @@ class CebuanoDoctorApp:
     # FAST CHAT BUBBLE RENDERING
     # -----------------------------------------------------------------
 
-    def _create_rounded_bubble(self, parent_widget, text, bg_color, fg_color, max_width=400, radius=14):
+    def _create_rounded_bubble(self, parent_widget, text, bg_color, fg_color, max_width=1000, radius=14):
         """Fast creation of rounded bubbles using cached tkfont measurement."""
         lines = text.split("\n")
         calc_lines = []
